@@ -1,218 +1,424 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gesture Particles</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZenParticles - Local Vision</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
     <style>
-        body { margin: 0; overflow: hidden; background-color: #050505; font-family: sans-serif; }
-        
-        /* Loading Screen */
-        #loading {
-            position: absolute;
-            top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: white; font-size: 20px; text-align: center;
-            z-index: 200; pointer-events: none;
-        }
-
-        /* Video Preview (Small & Hidden mostly) */
-        #video-container {
-            position: absolute; bottom: 20px; right: 20px;
-            width: 120px; height: 90px;
-            border-radius: 8px; overflow: hidden;
-            border: 2px solid rgba(255,255,255,0.2);
-            z-index: 10; transform: scaleX(-1);
-        }
-        /* CRITICAL for iPhone: playsinline */
-        video { width: 100%; height: 100%; object-fit: cover; }
-
-        /* UI */
-        #ui {
-            position: absolute; top: 20px; left: 20px;
-            background: rgba(0,0,0,0.7); color: white;
-            padding: 15px; border-radius: 12px;
-            z-index: 100; max-width: 200px;
-            border: 1px solid rgba(255,255,255,0.2);
-        }
-        button {
-            background: #333; color: white; border: 1px solid #555;
-            padding: 8px; width: 100%; margin-bottom: 5px;
-            cursor: pointer; border-radius: 4px;
-        }
-        button:hover { background: #555; }
-        input[type="color"] { width: 100%; height: 30px; border: none; }
+      body { margin: 0; font-family: 'Inter', sans-serif; background: #000; overflow: hidden; }
+      canvas { display: block; }
+      @keyframes slide-in-right { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+      .slide-in-from-right-10 { animation: slide-in-right 0.5s ease-out forwards; }
     </style>
-
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-</head>
-<body>
-
-    <div id="loading">Initialize Camera...<br><span style="font-size:12px; opacity:0.6">Please Allow Access</span></div>
-
-    <div id="ui">
-        <h3 style="margin:0 0 10px 0;">Controls</h3>
-        <button onclick="changeShape('heart')">Heart</button>
-        <button onclick="changeShape('saturn')">Saturn</button>
-        <button onclick="changeShape('flower')">Flower</button>
-        <input type="color" id="colPick" value="#ff0066">
-        <div style="font-size:11px; margin-top:10px;">Hand Tension: <span id="tension">0%</span></div>
-    </div>
-
-    <div id="video-container">
-        <video id="input_video" playsinline autoplay muted></video>
-    </div>
-
-    <script>
-        // --- 1. Three.js Setup ---
-        const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x050505, 0.02);
-        
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        camera.position.z = 30;
-
-        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
-
-        // --- Particles ---
-        const count = 12000;
-        const geom = new THREE.BufferGeometry();
-        const pos = new Float32Array(count * 3);
-        // Start random
-        for(let i=0; i<count*3; i++) pos[i] = (Math.random()-0.5)*50;
-        geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-
-        // Texture
-        const canvas = document.createElement('canvas');
-        canvas.width = 32; canvas.height = 32;
-        const ctx = canvas.getContext('2d');
-        const grad = ctx.createRadialGradient(16,16,0,16,16,16);
-        grad.addColorStop(0, 'white');
-        grad.addColorStop(1, 'transparent');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0,0,32,32);
-        const tex = new THREE.Texture(canvas);
-        tex.needsUpdate = true;
-
-        const mat = new THREE.PointsMaterial({
-            size: 0.2, map: tex, transparent: true, 
-            opacity: 0.8, color: 0xff0066, blending: THREE.AdditiveBlending, depthWrite: false
-        });
-        const particles = new THREE.Points(geom, mat);
-        scene.add(particles);
-
-        // --- Shape Logic ---
-        let targetPos = new Float32Array(count * 3);
-        let handFactor = 0.5; // 0=Closed, 1=Open
-        let smoothFactor = 0.5;
-
-        function updateTarget(shape) {
-            for(let i=0; i<count; i++) {
-                let x,y,z; 
-                const idx = i*3;
-                if(shape === 'heart') {
-                    const t = Math.random()*Math.PI*2;
-                    const p = Math.random()*Math.PI*2;
-                    x = 16 * Math.pow(Math.sin(t), 3);
-                    y = 13 * Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
-                    z = 4 * Math.cos(p) * Math.sin(t);
-                    x*=0.8; y*=0.8; z*=0.8;
-                } else if(shape === 'saturn') {
-                    if(i < count*0.3) {
-                         // Planet
-                        const r = 6;
-                        const theta = Math.random()*Math.PI*2;
-                        const phi = Math.acos(2*Math.random()-1);
-                        x=r*Math.sin(phi)*Math.cos(theta);
-                        y=r*Math.sin(phi)*Math.sin(theta);
-                        z=r*Math.cos(phi);
-                    } else {
-                        // Ring
-                        const ang = Math.random()*Math.PI*2;
-                        const rad = 10 + Math.random()*8;
-                        x=Math.cos(ang)*rad;
-                        z=Math.sin(ang)*rad;
-                        y=(Math.random()-0.5);
-                    }
-                } else { // Flower
-                    const theta = Math.random()*Math.PI*2;
-                    const phi = Math.random()*Math.PI;
-                    const r = 10 * Math.cos(4*theta);
-                    x = r * Math.sin(phi) * Math.cos(theta);
-                    y = r * Math.sin(phi) * Math.sin(theta);
-                    z = (Math.random()-0.5)*5;
-                }
-                targetPos[idx] = x;
-                targetPos[idx+1] = y;
-                targetPos[idx+2] = z;
-            }
-        }
-        updateTarget('heart'); // Init
-
-        // UI Functions
-        window.changeShape = (s) => updateTarget(s);
-        document.getElementById('colPick').addEventListener('input', e => mat.color.set(e.target.value));
-
-        // --- MediaPipe Logic ---
-        const videoElement = document.getElementById('input_video');
-        
-        function onResults(results) {
-            document.getElementById('loading').style.display = 'none';
-            let val = 0.5;
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const lm = results.multiHandLandmarks[0];
-                // Dist between Wrist(0) and Middle Tip(12)
-                const d = Math.sqrt(Math.pow(lm[12].x - lm[0].x, 2) + Math.pow(lm[12].y - lm[0].y, 2));
-                val = (d - 0.15) * 3.5; // Normalize
-                val = Math.max(0, Math.min(1, val));
-            } else {
-                val = 0.5 + Math.sin(Date.now()*0.002)*0.2; // Idle animation
-            }
-            handFactor = val;
-            document.getElementById('tension').innerText = Math.round(handFactor*100)+'%';
-        }
-
-        const hands = new Hands({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-        }});
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-        hands.onResults(onResults);
-
-        const cam = new Camera(videoElement, {
-            onFrame: async () => { await hands.send({image: videoElement}); },
-            width: 640, height: 480
-        });
-        cam.start();
-
-        // --- Animate ---
-        function animate() {
-            requestAnimationFrame(animate);
-            smoothFactor += (handFactor - smoothFactor) * 0.1;
-            const scale = 0.2 + (smoothFactor * 2.0);
-
-            const p = geom.attributes.position.array;
-            for(let i=0; i<count; i++) {
-                const k = i*3;
-                p[k] += (targetPos[k]*scale - p[k])*0.05;
-                p[k+1] += (targetPos[k+1]*scale - p[k+1])*0.05;
-                p[k+2] += (targetPos[k+2]*scale - p[k+2])*0.05;
-            }
-            geom.attributes.position.needsUpdate = true;
-            particles.rotation.y += 0.002;
-            
-            renderer.render(scene, camera);
-        }
-        animate();
-
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth/window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+    
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.16.8",
+        "@react-three/drei": "https://esm.sh/@react-three/drei@9.108.0",
+        "three": "https://esm.sh/three@0.165.0",
+        "lucide-react": "https://esm.sh/lucide-react@0.394.0"
+      }
+    }
     </script>
-</body>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module" data-presets="react,typescript">
+      import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { Canvas, useFrame } from '@react-three/fiber';
+      import { OrbitControls, Stars } from '@react-three/drei';
+      import * as THREE from 'three';
+      import { Heart, Flower, Globe, User, Sparkles, Zap, Power, Video } from 'lucide-react';
+
+      // --- TYPES ---
+      const ParticleShape = {
+        HEART: 'HEART',
+        FLOWER: 'FLOWER',
+        SATURN: 'SATURN',
+        BUDDHA: 'BUDDHA',
+        FIREWORKS: 'FIREWORKS',
+      };
+
+      // --- PERLIN NOISE ---
+      class Perlin {
+        constructor() {
+          this.permutation = [151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,52,217,226,72,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180];
+          this.p = new Array(512);
+          for (let i = 0; i < 256; i++) this.p[256 + i] = this.p[i] = this.permutation[i];
+        }
+        fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+        lerp(t, a, b) { return a + t * (b - a); }
+        grad(hash, x, y, z) {
+          const h = hash & 15;
+          const u = h < 8 ? x : y;
+          const v = h < 4 ? y : h === 12 || h === 14 ? x : z;
+          return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+        }
+        noise(x, y, z) {
+          const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+          x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+          const u = this.fade(x), v = this.fade(y), w = this.fade(z);
+          const A = this.p[X] + Y, AA = this.p[A] + Z, AB = this.p[A + 1] + Z, B = this.p[X + 1] + Y, BA = this.p[B] + Z, BB = this.p[B + 1] + Z;
+          return this.lerp(w, this.lerp(v, this.lerp(u, this.grad(this.p[AA], x, y, z), this.grad(this.p[BA], x - 1, y, z)), this.lerp(u, this.grad(this.p[AB], x, y - 1, z), this.grad(this.p[BB], x - 1, y - 1, z))), this.lerp(v, this.lerp(u, this.grad(this.p[AA + 1], x, y, z - 1), this.grad(this.p[BA + 1], x - 1, y, z - 1)), this.lerp(u, this.grad(this.p[AB + 1], x, y - 1, z - 1), this.grad(this.p[BB + 1], x - 1, y - 1, z - 1))));
+        }
+      }
+
+      // --- SHAPE GENERATION ---
+      const generateParticles = (shape, count) => {
+        const positions = new Float32Array(count * 3);
+        for (let i = 0; i < count; i++) {
+          const i3 = i * 3;
+          let x = 0, y = 0, z = 0;
+          switch (shape) {
+            case ParticleShape.HEART: {
+              const t = Math.random() * Math.PI * 2;
+              const r = Math.sqrt(Math.random()) * 2;
+              const hx = 16 * Math.pow(Math.sin(t), 3);
+              const hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+              x = hx * 0.1 * r; y = hy * 0.1 * r; z = (Math.random() - 0.5) * 2; 
+              break;
+            }
+            case ParticleShape.FLOWER: {
+              const theta = Math.random() * Math.PI * 2;
+              const phi = Math.random() * Math.PI;
+              const k = 4;
+              const r = 2 + Math.cos(k * theta) * Math.sin(phi);
+              x = r * Math.sin(phi) * Math.cos(theta);
+              y = r * Math.sin(phi) * Math.sin(theta);
+              z = r * Math.cos(phi) * 0.5;
+              break;
+            }
+            case ParticleShape.SATURN: {
+              const isRing = Math.random() > 0.6;
+              if (isRing) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 3 + Math.random() * 2.5;
+                x = Math.cos(angle) * dist; z = Math.sin(angle) * dist; y = (Math.random() - 0.5) * 0.2;
+                const tilt = Math.PI / 6;
+                const yt = y * Math.cos(tilt) - z * Math.sin(tilt);
+                const zt = y * Math.sin(tilt) + z * Math.cos(tilt);
+                y = yt; z = zt;
+              } else {
+                const u = Math.random(), v = Math.random();
+                const theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1), r = 1.8;
+                x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi);
+              }
+              break;
+            }
+            case ParticleShape.BUDDHA: {
+              const part = Math.random();
+              if (part < 0.4) {
+                  const u = Math.random(), v = Math.random(), theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1);
+                  x = 2.5 * Math.sin(phi) * Math.cos(theta); y = 1.0 * Math.sin(phi) * Math.sin(theta) - 1.5; z = 2.0 * Math.cos(phi);
+              } else if (part < 0.8) {
+                  const theta = Math.random() * Math.PI * 2, h = Math.random() * 2.5, r = 1.0 - (h * 0.1);
+                  x = r * Math.cos(theta); y = h - 1.5; z = r * Math.sin(theta);
+              } else {
+                  const u = Math.random(), v = Math.random(), theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1), r = 0.8;
+                  x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta) + 1.8; z = r * Math.cos(phi);
+              }
+              break;
+            }
+            case ParticleShape.FIREWORKS: {
+               const u = Math.random(), v = Math.random(), theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1), r = Math.random() * 0.2;
+               x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi);
+               break;
+            }
+          }
+          positions[i3] = x; positions[i3 + 1] = y; positions[i3 + 2] = z;
+        }
+        return positions;
+      };
+
+      // --- COMPONENTS ---
+      const ParticleSystem = ({ shape, color, count, interactionState }) => {
+        const pointsRef = useRef(null);
+        const materialRef = useRef(null);
+        const perlin = useMemo(() => new Perlin(), []);
+        const targetPositions = useMemo(() => generateParticles(shape, count), [shape, count]);
+        const particlesRef = useRef({ positions: new Float32Array(count * 3), velocities: new Float32Array(count * 3) });
+
+        useEffect(() => {
+          particlesRef.current.positions.set(targetPositions);
+          particlesRef.current.velocities.fill(0);
+          if (pointsRef.current) {
+              pointsRef.current.geometry.attributes.position.array.set(particlesRef.current.positions);
+              pointsRef.current.geometry.attributes.position.needsUpdate = true;
+          }
+        }, [targetPositions, count]);
+
+        useFrame((state) => {
+          if (!pointsRef.current) return;
+          const geometry = pointsRef.current.geometry;
+          const time = state.clock.getElapsedTime();
+          const tension = interactionState.tension; 
+          const { positions, velocities } = particlesRef.current;
+          const targets = targetPositions;
+
+          const currentScale = 1.5 - (tension * 1.0);
+          const attraction = 0.015 + (tension * 0.135);
+          const nSpeed = 0.3 + (tension * 3.7);
+          const nFreq = 0.8 + (tension * 0.7); 
+          const nAmp = 0.03 + (tension * 0.12);
+          const damping = 0.92 - (tension * 0.32);
+
+          for (let i = 0; i < count; i++) {
+            const i3 = i * 3;
+            const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2];
+            const tx = targets[i3] * currentScale, ty = targets[i3 + 1] * currentScale, tz = targets[i3 + 2] * currentScale;
+
+            if (shape === ParticleShape.FIREWORKS) {
+                const dist = Math.sqrt(px*px + py*py + pz*pz);
+                const nx = perlin.noise(px*0.5, py*0.5, time + i*0.001);
+                const ny = perlin.noise(py*0.5, pz*0.5, time + i*0.001);
+                const nz = perlin.noise(pz*0.5, px*0.5, time + i*0.001);
+
+                if (tension > 0.5) {
+                    velocities[i3] += -px * 0.05 + nx * 0.02;
+                    velocities[i3 + 1] += -py * 0.05 + ny * 0.02;
+                    velocities[i3 + 2] += -pz * 0.05 + nz * 0.02;
+                } else {
+                    velocities[i3] += px * 0.001 + nx * 0.005;
+                    velocities[i3 + 1] += py * 0.001 + ny * 0.005;
+                    velocities[i3 + 2] += pz * 0.001 + nz * 0.005;
+                }
+                if (dist > 20) {
+                    positions[i3] = 0; positions[i3+1] = 0; positions[i3+2] = 0;
+                    velocities[i3] = (Math.random()-0.5)*0.1;
+                    velocities[i3+1] = (Math.random()-0.5)*0.1;
+                    velocities[i3+2] = (Math.random()-0.5)*0.1;
+                }
+                positions[i3] += velocities[i3] * 0.9;
+                positions[i3+1] += velocities[i3+1] * 0.9;
+                positions[i3+2] += velocities[i3+2] * 0.9;
+            } else {
+                const ax = (tx - px) * attraction, ay = (ty - py) * attraction, az = (tz - pz) * attraction;
+                const nx = perlin.noise(px * nFreq + time * nSpeed, py * nFreq, pz * nFreq);
+                const ny = perlin.noise(px * nFreq, py * nFreq + time * nSpeed, pz * nFreq);
+                const nz = perlin.noise(px * nFreq, py * nFreq, pz * nFreq + time * nSpeed);
+
+                velocities[i3] = (velocities[i3] + ax + nx * nAmp) * damping;
+                velocities[i3 + 1] = (velocities[i3 + 1] + ay + ny * nAmp) * damping;
+                velocities[i3 + 2] = (velocities[i3 + 2] + az + nz * nAmp) * damping;
+
+                positions[i3] += velocities[i3];
+                positions[i3 + 1] += velocities[i3 + 1];
+                positions[i3 + 2] += velocities[i3 + 2];
+            }
+          }
+
+          geometry.attributes.position.array.set(positions);
+          geometry.attributes.position.needsUpdate = true;
+          pointsRef.current.rotation.y += 0.001 + (tension * 0.03);
+
+          if (materialRef.current) {
+              const baseColor = new THREE.Color(color);
+              const hotColor = new THREE.Color('#ffddaa');
+              const tColor = tension * tension;
+              materialRef.current.color.copy(baseColor).lerp(hotColor, tColor * 0.8);
+              materialRef.current.opacity = 0.5 + (tension * 0.5);
+              materialRef.current.size = 0.05 + (tension * 0.03);
+          }
+        });
+
+        return (
+          <points ref={pointsRef}>
+            <bufferGeometry>
+              <bufferAttribute attach="attributes-position" count={count} array={particlesRef.current.positions} itemSize={3} />
+            </bufferGeometry>
+            <pointsMaterial ref={materialRef} attach="material" size={0.05} color={color} transparent opacity={0.6} sizeAttenuation blending={THREE.AdditiveBlending} depthWrite={false} />
+          </points>
+        );
+      };
+
+      // --- CLIENT-SIDE VISION (NO API) ---
+      const VisionController = ({ onStateChange, isActive }) => {
+        const [status, setStatus] = useState('Idle');
+        const videoRef = useRef(null);
+        
+        useEffect(() => {
+          if (!isActive) {
+             if (videoRef.current && videoRef.current.srcObject) {
+               videoRef.current.srcObject.getTracks().forEach(t => t.stop());
+             }
+             setStatus("Stopped");
+             return;
+          }
+
+          setStatus("Loading AI...");
+          
+          let camera = null;
+          let hands = null;
+
+          const onResults = (results) => {
+             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                setStatus("Tracking");
+                let totalTension = 0;
+                
+                results.multiHandLandmarks.forEach((landmarks) => {
+                    // Calculate distance between Wrist (0) and Middle Finger Tip (12)
+                    const wrist = landmarks[0];
+                    const middleTip = landmarks[12];
+                    const distance = Math.sqrt(
+                        Math.pow(middleTip.x - wrist.x, 2) + 
+                        Math.pow(middleTip.y - wrist.y, 2)
+                    );
+                    
+                    // Normalize: Open ~0.4, Closed ~0.1
+                    // Map to 0 (Open) - 1 (Closed)
+                    // Clamp and Inverse
+                    let val = (distance - 0.15) / (0.4 - 0.15);
+                    val = Math.max(0, Math.min(1, val)); 
+                    totalTension += (1 - val); // Invert so closed = 1
+                });
+                
+                const avgTension = totalTension / results.multiHandLandmarks.length;
+                onStateChange({ tension: avgTension, isActive: true });
+             } else {
+                setStatus("No Hands");
+                onStateChange({ tension: 0, isActive: false });
+             }
+          };
+
+          // Initialize MediaPipe
+          if (window.Hands) {
+             hands = new window.Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+             }});
+             
+             hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+             });
+             
+             hands.onResults(onResults);
+
+             if (videoRef.current && window.Camera) {
+                 camera = new window.Camera(videoRef.current, {
+                    onFrame: async () => {
+                       await hands.send({image: videoRef.current});
+                    },
+                    width: 640,
+                    height: 480
+                 });
+                 camera.start();
+             }
+          }
+
+          return () => {
+             if(camera) camera.stop();
+             if(hands) hands.close();
+          }
+        }, [isActive]);
+
+        return (
+            <div className="absolute top-4 left-6 pointer-events-none z-50">
+               <div className="flex items-center gap-2">
+                 <div className={`w-2 h-2 rounded-full ${status === 'Tracking' ? 'bg-green-500 shadow-lg' : 'bg-white/20'}`} />
+                 <span className="text-[10px] text-white/50 font-mono">{status}</span>
+               </div>
+               <video ref={videoRef} className="opacity-0 fixed w-1 h-1 pointer-events-none" playsInline />
+            </div>
+        );
+      };
+
+      const Controls = ({ config, setConfig, isConnected, toggleConnection, currentTension }) => {
+        const shapes = [
+            { id: ParticleShape.HEART, icon: Heart, label: 'Heart' },
+            { id: ParticleShape.FLOWER, icon: Flower, label: 'Flower' },
+            { id: ParticleShape.SATURN, icon: Globe, label: 'Saturn' },
+            { id: ParticleShape.BUDDHA, icon: User, label: 'Meditate' },
+            { id: ParticleShape.FIREWORKS, icon: Sparkles, label: 'Fireworks' },
+        ];
+        const colors = ['#ff0055', '#00ddff', '#ffaa00', '#aa00ff', '#00ff66', '#ffffff'];
+
+        return (
+            <div className="absolute top-0 left-0 w-full h-full pointer-events-none flex flex-col justify-between p-6 z-10">
+                <div className="pointer-events-auto flex justify-between max-w-4xl mx-auto w-full">
+                    <div>
+                        <h1 className="text-white text-2xl font-light">Zen<span className="font-bold text-blue-400">Particles</span></h1>
+                        <p className="text-[10px] text-white/30 uppercase tracking-widest">Client-Side Vision</p>
+                    </div>
+                    <button onClick={toggleConnection} className={`flex items-center gap-2 px-6 py-2 rounded-full font-bold uppercase text-xs tracking-wider transition-all ${isConnected ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-white text-black'}`}>
+                        {isConnected ? <Power size={14} /> : <Zap size={14} />} {isConnected ? 'Stop Camera' : 'Start Camera'}
+                    </button>
+                </div>
+
+                {isConnected && (
+                  <div className="absolute top-24 right-6 pointer-events-auto bg-black/40 backdrop-blur-xl rounded-2xl border border-white/10 p-5 shadow-2xl w-56 animate-in slide-in-from-right-10 fade-in duration-500">
+                      <div className="flex justify-between items-center mb-2">
+                          <span className="text-xs text-white/50 uppercase">Tension</span>
+                          <span className="text-white font-mono text-sm">{(currentTension*100).toFixed(0)}%</span>
+                      </div>
+                      <div className="h-1 bg-white/10 rounded-full overflow-hidden mb-3">
+                         <div className="h-full bg-gradient-to-r from-blue-500 to-red-500 transition-all duration-200" style={{width: `${Math.max(5, currentTension*100)}%`}} />
+                      </div>
+                      <p className="text-[10px] text-white/60">Fist = High Tension<br/>Open Hand = Low Tension</p>
+                  </div>
+                )}
+
+                <div className="pointer-events-auto max-w-2xl mx-auto w-full bg-black/70 backdrop-blur-2xl rounded-3xl p-6 border border-white/10 shadow-2xl mb-4">
+                    <div className="flex justify-center gap-2 mb-6">
+                        {shapes.map(s => (
+                            <button key={s.id} onClick={() => setConfig({...config, shape: s.id})} className={`flex flex-col items-center gap-2 p-3 rounded-xl transition-all w-20 ${config.shape === s.id ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'}`}>
+                                <s.icon size={24} /> <span className="text-[10px]">{s.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="h-px bg-white/10 w-full mb-6" />
+                    <div className="flex justify-center gap-3">
+                        {colors.map(c => (
+                            <button key={c} onClick={() => setConfig({...config, color: c})} className={`w-8 h-8 rounded-full border-2 transition-all ${config.color === c ? 'border-white scale-110 shadow-[0_0_10px_white]' : 'border-transparent opacity-50'}`} style={{background: c}} />
+                        ))}
+                    </div>
+                </div>
+            </div>
+        );
+      };
+
+      const App = () => {
+        const [config, setConfig] = useState({ shape: ParticleShape.FLOWER, color: '#00ddff', particleCount: 5000 });
+        const [interactionState, setInteractionState] = useState({ tension: 0, isActive: false });
+        const [isCameraActive, setIsCameraActive] = useState(false);
+
+        return (
+            <div className="relative w-full h-screen bg-black">
+                <Canvas camera={{ position: [0, 0, 8], fov: 60 }}>
+                    <color attach="background" args={['#050505']} />
+                    <ambientLight intensity={0.5} />
+                    <pointLight position={[10, 10, 10]} intensity={1} />
+                    <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
+                    <Suspense fallback={null}>
+                        <ParticleSystem shape={config.shape} color={config.color} count={config.particleCount} interactionState={interactionState} />
+                    </Suspense>
+                    <OrbitControls enablePan={false} enableZoom={true} autoRotate={!interactionState.isActive} autoRotateSpeed={0.5} />
+                </Canvas>
+                
+                <VisionController isActive={isCameraActive} onStateChange={(s) => setInteractionState(prev => ({...s, tension: prev.tension * 0.3 + s.tension * 0.7}))} />
+                
+                <Controls config={config} setConfig={setConfig} isConnected={isCameraActive} toggleConnection={() => setIsCameraActive(!isCameraActive)} currentTension={interactionState.tension} />
+            </div>
+        );
+      };
+
+      const root = createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
 </html>
