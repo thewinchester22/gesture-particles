@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Controlled Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', sans-serif; }
+        
+        /* Video Preview (Hidden or Small) */
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 160px;
+            height: 120px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            z-index: 10;
+            transform: scaleX(-1); /* Mirror effect */
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+
+        /* UI Panel */
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(20, 20, 20, 0.6);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            z-index: 100;
+            width: 240px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        h1 { font-size: 16px; margin: 0 0 15px 0; text-transform: uppercase; letter-spacing: 2px; opacity: 0.8; }
+        
+        .control-group { margin-bottom: 20px; }
+        label { display: block; font-size: 12px; margin-bottom: 8px; opacity: 0.6; }
+
+        /* Shape Buttons */
+        .shape-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            padding: 10px;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.3s;
+            font-size: 12px;
+        }
+        button:hover { background: rgba(255, 255, 255, 0.2); }
+        button.active { background: #4f7eff; font-weight: bold; }
+
+        /* Color Picker */
+        input[type="color"] {
+            width: 100%;
+            height: 40px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: none;
+        }
+
+        #status {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status">Starting Camera & AI...</div>
+
+    <div id="video-container">
+        <video id="input-video"></video>
+    </div>
+
+    <div id="ui-panel">
+        <h1>Particle Control</h1>
+        
+        <div class="control-group">
+            <label>Shape Template</label>
+            <div class="shape-grid">
+                <button onclick="setShape('heart')" class="active" id="btn-heart">Heart</button>
+                <button onclick="setShape('flower')" id="btn-flower">Flower</button>
+                <button onclick="setShape('saturn')" id="btn-saturn">Saturn</button>
+                <button onclick="setShape('buddha')" id="btn-buddha">Buddha</button>
+                <button onclick="setShape('fireworks')" id="btn-fireworks">Fireworks</button>
+                <button onclick="setShape('dna')" id="btn-dna">DNA Helix</button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>Particle Color</label>
+            <input type="color" id="color-picker" value="#ff0066">
+        </div>
+
+        <div class="control-group">
+            <label>Interaction Data</label>
+            <div style="font-size: 12px; opacity: 0.7;">
+                Hand Tension: <span id="tension-val">0%</span>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js';
+        import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+        import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+
+        // --- Configuration ---
+        const PARTICLE_COUNT = 15000;
+        const PARTICLE_SIZE = 0.15;
+        let currentShape = 'heart';
+        let targetPositions = new Float32Array(PARTICLE_COUNT * 3);
+        
+        // Interaction State
+        let handTension = 0; // 0 = Closed (compressed), 1 = Open (expanded)
+        let smoothedTension = 0.5;
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        // Add subtle fog for depth
+        scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 30;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Particle System ---
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(PARTICLE_COUNT * 3);
+        
+        // Initialize random positions
+        for(let i=0; i<PARTICLE_COUNT*3; i++) {
+            positions[i] = (Math.random() - 0.5) * 50;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+        // Create a soft glowing dot texture programmatically
+        const getTexture = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32; canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 32, 32);
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        };
+
+        const material = new THREE.PointsMaterial({
+            color: 0xff0066,
+            size: PARTICLE_SIZE,
+            map: getTexture(),
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // --- Math Generators for Shapes ---
+        
+        function calculateTargetPositions(shape) {
+            const arr = new Float32Array(PARTICLE_COUNT * 3);
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                let x, y, z;
+                const idx = i * 3;
+
+                if (shape === 'heart') {
+                    // Parametric Heart
+                    const t = Math.random() * Math.PI * 2;
+                    const p = Math.random() * Math.PI * 2; // Volume distribution
+                    // Heart math formula
+                    x = 16 * Math.pow(Math.sin(t), 3);
+                    y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+                    z = 4 * Math.cos(p) * Math.sin(t); // Add volume
+                    
+                    // Normalize spread
+                    x *= 0.8; y *= 0.8; z *= 0.8;
+
+                } else if (shape === 'flower') {
+                    // Polar Rose / Flower
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.random() * Math.PI;
+                    const r = 10 * Math.cos(4 * theta); // 4 petals
+                    
+                    x = r * Math.sin(phi) * Math.cos(theta);
+                    y = r * Math.sin(phi) * Math.sin(theta);
+                    z = (Math.random() - 0.5) * 5; // Flat-ish
+
+                } else if (shape === 'saturn') {
+                    // Planet + Ring
+                    if (i < PARTICLE_COUNT * 0.4) {
+                        // Planet Sphere
+                        const theta = Math.random() * Math.PI * 2;
+                        const phi = Math.acos((Math.random() * 2) - 1);
+                        const r = 6;
+                        x = r * Math.sin(phi) * Math.cos(theta);
+                        y = r * Math.sin(phi) * Math.sin(theta);
+                        z = r * Math.cos(phi);
+                    } else {
+                        // Rings
+                        const angle = Math.random() * Math.PI * 2;
+                        const radius = 9 + Math.random() * 8;
+                        x = Math.cos(angle) * radius;
+                        z = Math.sin(angle) * radius;
+                        y = (Math.random() - 0.5) * 0.5; // Thin ring
+                        
+                        // Tilt the ring
+                        const tilt = 0.4;
+                        const yTemp = y;
+                        y = y * Math.cos(tilt) - z * Math.sin(tilt);
+                        z = yTemp * Math.sin(tilt) + z * Math.cos(tilt);
+                    }
+
+                } else if (shape === 'fireworks') {
+                    // Explosion sphere
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos((Math.random() * 2) - 1);
+                    const r = Math.random() * 20; // Volume
+                    x = r * Math.sin(phi) * Math.cos(theta);
+                    y = r * Math.sin(phi) * Math.sin(theta);
+                    z = r * Math.cos(phi);
+
+                } else if (shape === 'dna') {
+                    // Double Helix
+                    const t = (i / PARTICLE_COUNT) * Math.PI * 20;
+                    const r = 5;
+                    const strand = (i % 2 === 0) ? 1 : -1; // Two strands
+                    
+                    x = Math.cos(t) * r;
+                    z = Math.sin(t) * r;
+                    y = (i / PARTICLE_COUNT) * 40 - 20; // Height spread
+                    
+                    // Add offset for second strand
+                    if(strand === -1) {
+                         x = Math.cos(t + Math.PI) * r;
+                         z = Math.sin(t + Math.PI) * r;
+                    }
+
+                } else if (shape === 'buddha') {
+                    // Approximated Meditating Figure (Head + Body + Legs)
+                    const section = Math.random();
+                    if(section < 0.2) {
+                        // Head
+                        const r = 2.5;
+                        const theta = Math.random() * Math.PI * 2;
+                        const phi = Math.acos(2 * Math.random() - 1);
+                        x = r * Math.sin(phi) * Math.cos(theta);
+                        y = r * Math.sin(phi) * Math.sin(theta) + 6;
+                        z = r * Math.cos(phi);
+                    } else if (section < 0.6) {
+                        // Body
+                         const r = 4.5;
+                        const theta = Math.random() * Math.PI * 2;
+                        const phi = Math.acos(2 * Math.random() - 1);
+                        x = r * Math.sin(phi) * Math.cos(theta) * 0.8; // Ellipsoid
+                        y = r * Math.sin(phi) * Math.sin(theta);
+                        z = r * Math.cos(phi) * 0.6;
+                    } else {
+                        // Base/Legs (Disk)
+                        const angle = Math.random() * Math.PI * 2;
+                        const rad = Math.random() * 7;
+                        x = Math.cos(angle) * rad;
+                        y = -4 + (Math.random() * 2);
+                        z = Math.sin(angle) * rad;
+                    }
+                }
+
+                arr[idx] = x;
+                arr[idx + 1] = y;
+                arr[idx + 2] = z;
+            }
+            return arr;
+        }
+
+        // --- Functions exposed to window for HTML buttons ---
+        window.setShape = (shape) => {
+            currentShape = shape;
+            targetPositions = calculateTargetPositions(shape);
+            
+            // UI Update
+            document.querySelectorAll('.shape-grid button').forEach(b => b.classList.remove('active'));
+            document.getElementById(`btn-${shape}`).classList.add('active');
+        };
+
+        // Initialize first shape
+        setShape('heart');
+
+        // Color Picker Listener
+        document.getElementById('color-picker').addEventListener('input', (e) => {
+            material.color.set(e.target.value);
+        });
+
+
+        // --- MediaPipe Hands Logic ---
+        const videoElement = document.getElementById('input-video');
+        
+        function onResults(results) {
+            document.getElementById('status').style.opacity = 0; // Hide loading text
+            
+            let tension = 0;
+            let handsFound = 0;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    handsFound++;
+                    
+                    // Logic: Distance between Wrist (0) and Middle Finger Tip (12)
+                    // If distance is large = Open Hand. If small = Closed Fist.
+                    const wrist = landmarks[0];
+                    const middleTip = landmarks[12];
+                    
+                    // Simple Euclidean distance (ignoring Z for simplicity/speed)
+                    const dist = Math.sqrt(
+                        Math.pow(middleTip.x - wrist.x, 2) + 
+                        Math.pow(middleTip.y - wrist.y, 2)
+                    );
+
+                    // Normalize: typically range is 0.1 (fist) to 0.4 (open) in camera space
+                    let val = (dist - 0.15) / (0.4 - 0.15); 
+                    val = Math.max(0, Math.min(1, val)); // Clamp 0 to 1
+                    
+                    tension += val;
+                }
+                
+                // Average if two hands
+                if (handsFound > 0) tension /= handsFound;
+            } else {
+                // If no hands, default to "breathing" state
+                tension = 0.5 + Math.sin(Date.now() * 0.002) * 0.2;
+            }
+
+            handTension = tension;
+            document.getElementById('tension-val').innerText = Math.round(handTension * 100) + '%';
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onResults);
+
+        const cam = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        cam.start();
+
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smooth out the tension input
+            smoothedTension += (handTension - smoothedTension) * 0.1;
+
+            // Map smoothed tension to scale
+            // Tension 0 (Fist) = Scale 0.2 (Compressed)
+            // Tension 1 (Open) = Scale 2.0 (Expanded)
+            const scaleFactor = 0.2 + (smoothedTension * 2.5);
+
+            const positionsAttribute = geometry.attributes.position;
+            const currentPositions = positionsAttribute.array;
+
+            // Animate particles toward target
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const idx = i * 3;
+                
+                // Get target coordinates
+                const tx = targetPositions[idx] * scaleFactor;
+                const ty = targetPositions[idx + 1] * scaleFactor;
+                const tz = targetPositions[idx + 2] * scaleFactor;
+
+                // Lerp current to target (Morphing effect)
+                currentPositions[idx] += (tx - currentPositions[idx]) * 0.05;
+                currentPositions[idx+1] += (ty - currentPositions[idx+1]) * 0.05;
+                currentPositions[idx+2] += (tz - currentPositions[idx+2]) * 0.05;
+            }
+
+            positionsAttribute.needsUpdate = true;
+            
+            // Rotate the whole system slowly
+            particles.rotation.y += 0.002;
+            particles.rotation.z += 0.001;
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
