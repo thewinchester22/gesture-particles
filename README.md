@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ZenParticles - Static Idle</title>
+    <title>ZenParticles - Freeze on Exit</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
     
@@ -42,7 +42,7 @@
       import { Canvas, useFrame } from '@react-three/fiber';
       import { OrbitControls, Stars } from '@react-three/drei';
       import * as THREE from 'three';
-      import { Heart, Flower, Globe, User, Sparkles, Zap, Power, Move } from 'lucide-react';
+      import { Heart, Flower, Globe, User, Sparkles, Zap, Power, Move, Lock } from 'lucide-react';
 
       // --- TYPES ---
       const ParticleShape = {
@@ -152,8 +152,9 @@
         const targetPositions = useMemo(() => generateParticles(shape, count), [shape, count]);
         const particlesRef = useRef({ positions: new Float32Array(count * 3), velocities: new Float32Array(count * 3) });
         
-        // Store rotation target
-        const rotationRef = useRef({ x: 0, y: 0 });
+        // Store current rotation
+        const currentRot = useRef({ x: 0, y: 0 });
+        const lastTargetRot = useRef({ x: 0, y: 0 });
 
         useEffect(() => {
           particlesRef.current.positions.set(targetPositions);
@@ -168,29 +169,23 @@
           if (!pointsRef.current) return;
           const geometry = pointsRef.current.geometry;
           const time = state.clock.getElapsedTime();
-          
           const tension = interactionState.tension; 
           
-          // --- ROTATION LOGIC ---
-          let targetRotX = 0;
-          let targetRotY = 0;
-
+          // --- ROTATION LOGIC (FREEZE ON EXIT) ---
           if (interactionState.isActive) {
-             // Map Hand Position to Rotation
-             targetRotY = (interactionState.x - 0.5) * 4; 
-             targetRotX = (interactionState.y - 0.5) * 2; 
-          } else {
-             // IDLE: Return to Center (0,0) - Truly Static
-             targetRotX = 0;
-             targetRotY = 0;
+             // 1. Hand is Present: Update Target based on hand X/Y
+             lastTargetRot.current.y = (interactionState.x - 0.5) * 4; 
+             lastTargetRot.current.x = (interactionState.y - 0.5) * 2; 
           }
-
-          // Smooth lerp for rotation
-          rotationRef.current.x += (targetRotX - rotationRef.current.x) * 0.05;
-          rotationRef.current.y += (targetRotY - rotationRef.current.y) * 0.05;
           
-          pointsRef.current.rotation.y = rotationRef.current.y;
-          pointsRef.current.rotation.x = rotationRef.current.x;
+          // 2. Always lerp towards the *last known* target.
+          // If hand leaves, lastTargetRot stops updating, so the shape stops moving.
+          currentRot.current.x += (lastTargetRot.current.x - currentRot.current.x) * 0.05;
+          currentRot.current.y += (lastTargetRot.current.y - currentRot.current.y) * 0.05;
+          
+          pointsRef.current.rotation.y = currentRot.current.y;
+          pointsRef.current.rotation.x = currentRot.current.x;
+
 
           // --- PARTICLE PHYSICS ---
           const { positions, velocities } = particlesRef.current;
@@ -199,12 +194,281 @@
           const currentScale = 1.5 - (tension * 1.0);
           
           // If inactive, drastically reduce noise speed for "Frozen" look
-          const nSpeed = interactionState.isActive ? (0.3 + (tension * 3.7)) : 0.05; 
+          const nSpeed = interactionState.isActive ? (0.3 + (tension * 3.7)) : 0.02; // Very slow when idle
           const attraction = 0.015 + (tension * 0.135);
           const nFreq = 0.8 + (tension * 0.7); 
-          const nAmp = 0.03 + (tension * 0.12);
+          const nAmp = interactionState.isActive ? (0.03 + (tension * 0.12)) : 0.005; // Tiny wiggle when idle
           const damping = 0.92 - (tension * 0.32);
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3;
-            const px = positions[i3], py = positions[i3 + 1], p
+            const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2];
+            const tx = targets[i3] * currentScale, ty = targets[i3 + 1] * currentScale, tz = targets[i3 + 2] * currentScale;
+
+            if (shape === ParticleShape.FIREWORKS) {
+                const dist = Math.sqrt(px*px + py*py + pz*pz);
+                const nx = perlin.noise(px*0.5, py*0.5, time + i*0.001);
+                const ny = perlin.noise(py*0.5, pz*0.5, time + i*0.001);
+                const nz = perlin.noise(pz*0.5, px*0.5, time + i*0.001);
+
+                if (tension > 0.5) {
+                    velocities[i3] += -px * 0.05 + nx * 0.02;
+                    velocities[i3 + 1] += -py * 0.05 + ny * 0.02;
+                    velocities[i3 + 2] += -pz * 0.05 + nz * 0.02;
+                } else {
+                    velocities[i3] += px * 0.001 + nx * 0.005;
+                    velocities[i3 + 1] += py * 0.001 + ny * 0.005;
+                    velocities[i3 + 2] += pz * 0.001 + nz * 0.005;
+                }
+                if (dist > 20) {
+                    positions[i3] = 0; positions[i3+1] = 0; positions[i3+2] = 0;
+                    velocities[i3] = (Math.random()-0.5)*0.1;
+                    velocities[i3+1] = (Math.random()-0.5)*0.1;
+                    velocities[i3+2] = (Math.random()-0.5)*0.1;
+                }
+                positions[i3] += velocities[i3] * 0.9;
+                positions[i3+1] += velocities[i3+1] * 0.9;
+                positions[i3+2] += velocities[i3+2] * 0.9;
+            } else {
+                const ax = (tx - px) * attraction, ay = (ty - py) * attraction, az = (tz - pz) * attraction;
+                const nx = perlin.noise(px * nFreq + time * nSpeed, py * nFreq, pz * nFreq);
+                const ny = perlin.noise(px * nFreq, py * nFreq + time * nSpeed, pz * nFreq);
+                const nz = perlin.noise(px * nFreq, py * nFreq, pz * nFreq + time * nSpeed);
+
+                velocities[i3] = (velocities[i3] + ax + nx * nAmp) * damping;
+                velocities[i3 + 1] = (velocities[i3 + 1] + ay + ny * nAmp) * damping;
+                velocities[i3 + 2] = (velocities[i3 + 2] + az + nz * nAmp) * damping;
+
+                positions[i3] += velocities[i3];
+                positions[i3 + 1] += velocities[i3 + 1];
+                positions[i3 + 2] += velocities[i3 + 2];
+            }
+          }
+
+          geometry.attributes.position.array.set(positions);
+          geometry.attributes.position.needsUpdate = true;
+
+          if (materialRef.current) {
+              const baseColor = new THREE.Color(color);
+              const hotColor = new THREE.Color('#ffddaa');
+              const tColor = tension * tension;
+              materialRef.current.color.copy(baseColor).lerp(hotColor, tColor * 0.8);
+              materialRef.current.opacity = 0.5 + (tension * 0.5);
+              materialRef.current.size = 0.05 + (tension * 0.03);
+          }
+        });
+
+        return (
+          <points ref={pointsRef}>
+            <bufferGeometry>
+              <bufferAttribute attach="attributes-position" count={count} array={particlesRef.current.positions} itemSize={3} />
+            </bufferGeometry>
+            <pointsMaterial ref={materialRef} attach="material" size={0.05} color={color} transparent opacity={0.6} sizeAttenuation blending={THREE.AdditiveBlending} depthWrite={false} />
+          </points>
+        );
+      };
+
+      // --- VISION CONTROLLER ---
+      const VisionController = ({ onStateChange, isActive }) => {
+        const [status, setStatus] = useState('Idle');
+        const videoRef = useRef(null);
+        
+        useEffect(() => {
+          if (!isActive) {
+             if (videoRef.current && videoRef.current.srcObject) {
+               videoRef.current.srcObject.getTracks().forEach(t => t.stop());
+             }
+             setStatus("Stopped");
+             return;
+          }
+
+          setStatus("Loading AI...");
+          
+          let camera = null;
+          let hands = null;
+
+          const onResults = (results) => {
+             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                setStatus("Tracking");
+                
+                let totalTension = 0;
+                let avgX = 0;
+                let avgY = 0;
+
+                results.multiHandLandmarks.forEach((landmarks) => {
+                    const wrist = landmarks[0];
+                    const middleTip = landmarks[12];
+                    const distance = Math.sqrt(
+                        Math.pow(middleTip.x - wrist.x, 2) + 
+                        Math.pow(middleTip.y - wrist.y, 2)
+                    );
+                    
+                    let val = (distance - 0.15) / (0.4 - 0.15);
+                    val = Math.max(0, Math.min(1, val)); 
+                    totalTension += (1 - val);
+
+                    // Add position (Center of hand roughly)
+                    avgX += landmarks[9].x; // Middle Finger MCP
+                    avgY += landmarks[9].y;
+                });
+                
+                const count = results.multiHandLandmarks.length;
+                onStateChange({ 
+                    tension: totalTension / count, 
+                    x: avgX / count,
+                    y: avgY / count,
+                    isActive: true 
+                });
+             } else {
+                setStatus("No Hands");
+                // Do NOT reset X/Y here, only tension and active status
+                onStateChange({ tension: 0, x: null, y: null, isActive: false });
+             }
+          };
+
+          if (window.Hands) {
+             hands = new window.Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+             }});
+             
+             hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+             });
+             
+             hands.onResults(onResults);
+
+             if (videoRef.current && window.Camera) {
+                 camera = new window.Camera(videoRef.current, {
+                    onFrame: async () => {
+                       await hands.send({image: videoRef.current});
+                    },
+                    width: 640,
+                    height: 480
+                 });
+                 camera.start();
+             }
+          }
+
+          return () => {
+             if(camera) camera.stop();
+             if(hands) hands.close();
+          }
+        }, [isActive]);
+
+        return (
+            <div className="absolute top-4 left-6 pointer-events-none z-50">
+               <div className="flex items-center gap-2">
+                 <div className={`w-2 h-2 rounded-full ${status === 'Tracking' ? 'bg-green-500 shadow-lg' : 'bg-white/20'}`} />
+                 <span className="text-[10px] text-white/50 font-mono">{status}</span>
+               </div>
+               <video ref={videoRef} className="opacity-0 fixed w-1 h-1 pointer-events-none" playsInline />
+            </div>
+        );
+      };
+
+      const Controls = ({ config, setConfig, isConnected, toggleConnection, interactionState }) => {
+        const shapes = [
+            { id: ParticleShape.HEART, icon: Heart, label: 'Heart' },
+            { id: ParticleShape.FLOWER, icon: Flower, label: 'Flower' },
+            { id: ParticleShape.SATURN, icon: Globe, label: 'Saturn' },
+            { id: ParticleShape.BUDDHA, icon: User, label: 'Meditate' },
+            { id: ParticleShape.FIREWORKS, icon: Sparkles, label: 'Fireworks' },
+        ];
+        const colors = ['#ff0055', '#00ddff', '#ffaa00', '#aa00ff', '#00ff66', '#ffffff'];
+
+        return (
+            <div className="absolute top-0 left-0 w-full h-full pointer-events-none flex flex-col justify-between p-6 z-10">
+                <div className="pointer-events-auto flex justify-between max-w-4xl mx-auto w-full">
+                    <div>
+                        <h1 className="text-white text-2xl font-light">Zen<span className="font-bold text-blue-400">Particles</span></h1>
+                        <p className="text-[10px] text-white/30 uppercase tracking-widest">Freeze Mode</p>
+                    </div>
+                    <button onClick={toggleConnection} className={`flex items-center gap-2 px-6 py-2 rounded-full font-bold uppercase text-xs tracking-wider transition-all ${isConnected ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-white text-black'}`}>
+                        {isConnected ? <Power size={14} /> : <Zap size={14} />} {isConnected ? 'Stop Camera' : 'Start Camera'}
+                    </button>
+                </div>
+
+                {isConnected && (
+                  <div className="absolute top-24 right-6 pointer-events-auto bg-black/40 backdrop-blur-xl rounded-2xl border border-white/10 p-5 shadow-2xl w-56 animate-in slide-in-from-right-10 fade-in duration-500">
+                      <div className="flex justify-between items-center mb-2">
+                          <span className="text-xs text-white/50 uppercase">Tension</span>
+                          <span className="text-white font-mono text-sm">{(interactionState.tension*100).toFixed(0)}%</span>
+                      </div>
+                      <div className="h-1 bg-white/10 rounded-full overflow-hidden mb-3">
+                         <div className="h-full bg-gradient-to-r from-blue-500 to-red-500 transition-all duration-200" style={{width: `${Math.max(5, interactionState.tension*100)}%`}} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 mt-4">
+                        <div className={`p-2 rounded text-center transition-colors ${interactionState.isActive ? 'bg-white/10' : 'bg-red-500/20 text-red-300'}`}>
+                            {interactionState.isActive ? <Move size={12} className="mx-auto mb-1" /> : <Lock size={12} className="mx-auto mb-1" />}
+                            <p className="text-[9px]">{interactionState.isActive ? "Move Hand" : "FROZEN"}</p>
+                        </div>
+                         <div className="bg-white/5 p-2 rounded text-center">
+                            <Zap size={12} className="mx-auto text-white/50 mb-1" />
+                            <p className="text-[9px] text-white/60">Open/Close<br/>to Explode</p>
+                        </div>
+                      </div>
+                  </div>
+                )}
+
+                <div className="pointer-events-auto max-w-2xl mx-auto w-full bg-black/70 backdrop-blur-2xl rounded-3xl p-6 border border-white/10 shadow-2xl mb-4">
+                    <div className="flex justify-center gap-2 mb-6">
+                        {shapes.map(s => (
+                            <button key={s.id} onClick={() => setConfig({...config, shape: s.id})} className={`flex flex-col items-center gap-2 p-3 rounded-xl transition-all w-20 ${config.shape === s.id ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'}`}>
+                                <s.icon size={24} /> <span className="text-[10px]">{s.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="h-px bg-white/10 w-full mb-6" />
+                    <div className="flex justify-center gap-3">
+                        {colors.map(c => (
+                            <button key={c} onClick={() => setConfig({...config, color: c})} className={`w-8 h-8 rounded-full border-2 transition-all ${config.color === c ? 'border-white scale-110 shadow-[0_0_10px_white]' : 'border-transparent opacity-50'}`} style={{background: c}} />
+                        ))}
+                    </div>
+                </div>
+            </div>
+        );
+      };
+
+      const App = () => {
+        const [config, setConfig] = useState({ shape: ParticleShape.FLOWER, color: '#00ddff', particleCount: 5000 });
+        const [interactionState, setInteractionState] = useState({ tension: 0, x: 0.5, y: 0.5, isActive: false });
+        const [isCameraActive, setIsCameraActive] = useState(false);
+
+        // State merging logic for smooth transitions
+        const handleStateChange = (newState) => {
+            setInteractionState(prev => ({
+                tension: prev.tension * 0.3 + newState.tension * 0.7,
+                x: newState.x !== null ? newState.x : prev.x, // Keep last X if null
+                y: newState.y !== null ? newState.y : prev.y, // Keep last Y if null
+                isActive: newState.isActive
+            }));
+        };
+
+        return (
+            <div className="relative w-full h-screen bg-black">
+                <Canvas camera={{ position: [0, 0, 8], fov: 60 }}>
+                    <color attach="background" args={['#050505']} />
+                    <ambientLight intensity={0.5} />
+                    <pointLight position={[10, 10, 10]} intensity={1} />
+                    <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
+                    <Suspense fallback={null}>
+                        <ParticleSystem shape={config.shape} color={config.color} count={config.particleCount} interactionState={interactionState} />
+                    </Suspense>
+                    <OrbitControls enablePan={false} enableZoom={true} enableRotate={false} />
+                </Canvas>
+                
+                <VisionController isActive={isCameraActive} onStateChange={handleStateChange} />
+                
+                <Controls config={config} setConfig={setConfig} isConnected={isCameraActive} toggleConnection={() => setIsCameraActive(!isCameraActive)} interactionState={interactionState} />
+            </div>
+        );
+      };
+
+      const root = createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
